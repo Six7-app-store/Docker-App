@@ -1,0 +1,64 @@
+=====================================================================
+ Docker-Lernumgebung
+=====================================================================
+
+Du hast einen eigenen Docker-Daemon ("rootless"), der mit deinen
+Rechten laeuft. Deine Images und Container sieht nur du - die anderen
+im Team haben jeweils ihren eigenen.
+
+Dein Portbereich
+----------------
+Alle im Team teilen sich eine VM und damit die Ports. Damit ihr euch
+nicht in die Quere kommt, hat jeder einen Bereich von 10 Ports:
+
+  echo $MEIN_PORT                      erster Port deines Bereichs
+  cat /etc/docker-app/ports            Bereiche aller Teammitglieder
+
+Von aussen erreichbar sind die Ports 8000-8999 ueber die IPv6-Adresse
+der VM, z.B. im Browser:  http://[<IPv6-Adresse>]:<Port>/
+Die Adresse zeigt:        ip -6 addr show scope global
+
+Erste Schritte
+--------------
+  docker run hello-world               funktioniert alles?
+  docker run -it --rm alpine sh        Shell in einem Container (exit beendet)
+  docker ps -a                         alle Container
+  docker images                        alle Images
+  docker run -d --name web -p $MEIN_PORT:80 nginx:1.27-alpine
+  curl localhost:$MEIN_PORT            Antwort von nginx
+  docker logs web
+  docker rm -f web
+
+Kurzform: "dc" statt "docker compose". Tab-Vervollstaendigung ist aktiv.
+
+Beispiele (in dieser Reihenfolge)
+---------------------------------
+  01-webseite     eigenes Image mit Dockerfile bauen
+  02-compose      zwei Container (Web-App + Redis) mit Docker Compose
+  03-multistage   Multi-Stage-Build: kleines Image aus Go-Quellcode
+
+Jedes Beispiel hat oben in der Datei eine Anleitung.
+
+Team-Ordner
+-----------
+  ~/team  ->  /srv/team                fuer alle im Team les- und schreibbar
+
+Werkzeuge
+---------
+  lazydocker           Terminal-Oberflaeche fuer Container, Images, Logs
+  docker compose       mehrere Container gemeinsam starten
+  docker buildx        erweiterte Builds
+
+Aufraeumen
+----------
+  docker system df                     wie viel Platz belegt Docker?
+  docker system prune                  gestoppte Container, alte Images weg
+
+Grenzen
+-------
+  - Kein sudo. Container laufen mit deinen Rechten, nicht als root
+    auf der VM.
+  - Ports unter 1024 (z.B. 80) gehen nicht direkt - nimm deinen
+    Portbereich und z.B. "-p $MEIN_PORT:80".
+  - Der Plattenplatz der VM ist begrenzt und wird geteilt. Raeume
+    nicht mehr benoetigte Images auf.

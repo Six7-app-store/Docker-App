@@ -1,0 +1,29 @@
+# Beispiel 2: zwei Container mit Docker Compose
+#
+#   cd ~/docker-kurs/beispiele/02-compose
+#   docker compose up -d --build
+#   curl localhost:$MEIN_PORT          mehrmals aufrufen - der Zaehler steigt
+#   docker compose logs -f web         Logs verfolgen (Strg+C beendet)
+#   docker compose down                alles stoppen und entfernen
+#   docker compose down -v             ... inklusive Volume (Zaehler weg)
+#
+# Die Web-App erreicht Redis einfach ueber den Namen "redis": Compose legt
+# ein gemeinsames Netz an, in dem die Dienstnamen aufgeloest werden.
+
+services:
+  web:
+    build: ./app
+    ports:
+      - "${MEIN_PORT:-8000}:5000"
+    environment:
+      REDIS_HOST: redis
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-daten:/data
+
+volumes:
+  redis-daten:

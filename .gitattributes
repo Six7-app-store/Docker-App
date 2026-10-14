@@ -1,0 +1,18 @@
+# Alles im Repo landet am Ende auf einer Linux-VM: cloud-init legt die
+# Einrichtungsskripte beim ersten Boot dort ab und fuehrt sie aus.
+#
+# Ohne diese Datei wuerde Git bei core.autocrlf=true (Standard auf Windows) die
+# Skripte beim Auschecken auf CRLF umschreiben. Auf der VM scheitert dann schon
+# "set -euo pipefail\r", und Here-Document-Marker passen nicht mehr auf ihren
+# Schluss-Marker. Die Einrichtung bricht mit Meldungen ab, die nichts mit der
+# eigentlichen Ursache zu tun haben.
+* text=auto eol=lf
+
+*.sh  text eol=lf
+*.tpl text eol=lf
+*.hcl text eol=lf
+*.yml text eol=lf
+
+# Windows-Zeilenenden nur dort, wo Windows sie erwartet.
+*.ps1 text eol=crlf
+*.bat text eol=crlf

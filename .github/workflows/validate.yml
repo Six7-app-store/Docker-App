@@ -1,0 +1,33 @@
+# Checks what the AppStore worker will run, without a cloud: the OpenTofu
+# code must parse and validate, the shell scripts must pass shellcheck.
+# Credentials are never needed here; a real deploy only happens in the
+# AppStore, in the deployer's project.
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          # Same version as the AppStore worker image (ADR 0010).
+          tofu_version: 1.13.1
+
+      - name: OpenTofu
+        working-directory: tofu
+        run: |
+          tofu fmt -check -recursive
+          tofu init -backend=false -input=false
+          tofu validate
+
+      - name: ShellCheck
+        run: shellcheck tofu/files/*.sh
