@@ -32,8 +32,85 @@ locals {
 
   # Wie bei Ubuntu- und Windows-App: keine Floating IP. Zwischen VM-Subnetz
   # und externem Netz fehlt der Router; oeffentlich erreichbar ist die VM
-  # ueber ihre IPv6-Adresse.
+  # ueber die feste Adresse der gewaehlten Familie (var.ip_mode).
   enable_floating_ip = false
+}
+
+############################
+# ADRESSFAMILIEN (var.ip_mode)
+############################
+
+locals {
+  ethertypes = {
+    ipv4 = ["IPv4"]
+    ipv6 = ["IPv6"]
+    dual = ["IPv4", "IPv6"]
+  }[var.ip_mode]
+
+  # Bei dual liegt die Hauptschnittstelle im IPv6-Netz: dessen private IPv4
+  # bringt den Weg nach draussen (Paketquellen, Docker Hub) ueber NAT mit,
+  # die oeffentliche IPv4 kommt als zweite Schnittstelle dazu.
+  primary_network_id = var.ip_mode == "ipv4" ? var.network_v4_uuid : var.network_uuid
+
+  dual = var.ip_mode == "dual"
+}
+
+# SSH je Adressfamilie - eine IPv4-Regel laesst kein IPv6-Paket durch und
+# umgekehrt. Die gemeinsame Security Group bleibt zusaetzlich dran.
+resource "openstack_networking_secgroup_v2" "ssh" {
+  name        = "${local.app_name}-ssh"
+  description = "SSH zur Team-VM (${var.ip_mode})"
+}
+
+resource "openstack_networking_secgroup_rule_v2" "ssh" {
+  for_each = toset(local.ethertypes)
+
+  security_group_id = openstack_networking_secgroup_v2.ssh.id
+  direction         = "ingress"
+  ethertype         = each.key
+  protocol          = "tcp"
+  port_range_min    = 22
+  port_range_max    = 22
+  remote_ip_prefix  = each.key == "IPv4" ? "0.0.0.0/0" : "::/0"
+  description       = "SSH (${each.key})"
+}
+
+# Zweite Schnittstelle fuer dual, vorab als Port angelegt: so sind MAC und
+# Adresse schon bekannt, wenn cloud-init sein user-data bekommt.
+resource "openstack_networking_port_v2" "team_v4" {
+  for_each   = local.dual ? toset(local.teams_list) : toset([])
+  name       = "${local.app_name}-${local.team_slugs[each.key]}-v4"
+  network_id = var.network_v4_uuid
+
+  security_group_ids = [
+    var.shared_secgroup_id,
+    openstack_networking_secgroup_v2.ssh.id,
+  ]
+}
+
+locals {
+  secondary = {
+    for team, port in openstack_networking_port_v2.team_v4 : team => {
+      mac  = port.mac_address
+      ipv4 = one([for ip in port.all_fixed_ips : ip if !strcontains(ip, ":")])
+    }
+  }
+  secondary_gateway = local.dual ? data.openstack_networking_subnet_v2.v4[0].gateway_ip : ""
+}
+
+# Gateway des IPv4-Netzes fuer die eigene Routing-Tabelle der zweiten
+# Schnittstelle (dual), siehe cloud-init.yml.tpl.
+data "openstack_networking_subnet_v2" "v4" {
+  count      = local.dual ? 1 : 0
+  network_id = var.network_v4_uuid
+  ip_version = 4
+
+  lifecycle {
+    postcondition {
+      condition     = self.gateway_ip != ""
+      error_message = "Das IPv4-Netz in network_v4_uuid hat kein Gateway; dual braucht eins fuer die Antworten der zweiten Schnittstelle."
+    }
+  }
 }
 
 ############################
@@ -117,15 +194,20 @@ resource "openstack_compute_instance_v2" "team_vm" {
   flavor_name = var.flavor_name
   key_pair    = null
 
-  security_groups = [var.shared_secgroup_id]
+  # Per ID: Nova nimmt beides an, ein Name ist aber nicht eindeutig, sobald
+  # ein zweites Deployment im Projekt eine gleichnamige Gruppe hat.
+  security_groups = [var.shared_secgroup_id, openstack_networking_secgroup_v2.ssh.id]
 
   timeouts {
     create = "15m"
     delete = "15m"
   }
 
+  # Nur die Hauptschnittstelle. Die zweite bei dual haengt interface_attach
+  # unten an: als zweiter network-Block wuerde cloud-init sie beim ersten
+  # Boot mit einer eigenen Default-Route einrichten.
   network {
-    uuid = var.network_uuid
+    uuid = local.primary_network_id
   }
 
   # Skripte gzip+base64: so stoeren ${...} der Shell das Template nicht, und
@@ -146,6 +228,9 @@ resource "openstack_compute_instance_v2" "team_vm" {
       }
       if user.team == each.key
     ]
+    secondary_mac     = local.dual ? local.secondary[each.key].mac : ""
+    secondary_ipv4    = local.dual ? local.secondary[each.key].ipv4 : ""
+    secondary_gateway = local.secondary_gateway
   })
 
   metadata = {
@@ -153,7 +238,26 @@ resource "openstack_compute_instance_v2" "team_vm" {
     app  = local.app_name
   }
 
-  depends_on = [terraform_data.team_limit]
+  depends_on = [terraform_data.team_limit, openstack_networking_secgroup_rule_v2.ssh]
+
+  lifecycle {
+    precondition {
+      condition     = var.ip_mode == "ipv6" || var.network_v4_uuid != ""
+      error_message = "ip_mode \"${var.ip_mode}\" braucht ein IPv4-Netz in network_v4_uuid."
+    }
+    precondition {
+      condition     = var.ip_mode == "ipv4" || var.network_uuid != ""
+      error_message = "ip_mode \"${var.ip_mode}\" braucht ein IPv6-Netz in network_uuid."
+    }
+  }
+}
+
+# Zweite Schnittstelle (dual) an die laufende Instanz. Eingerichtet wird sie
+# von cloud-init, das auf ihre MAC wartet - siehe runcmd in cloud-init.yml.tpl.
+resource "openstack_compute_interface_attach_v2" "team_v4" {
+  for_each    = openstack_networking_port_v2.team_v4
+  instance_id = openstack_compute_instance_v2.team_vm[each.key].id
+  port_id     = each.value.id
 }
 
 ############################
@@ -179,7 +283,7 @@ resource "openstack_networking_floatingip_associate_v2" "team_fip_assoc" {
 # Docker-Installation und die rootless Daemons der Nutzer brauchen nach
 # ACTIVE noch einige Minuten. Ohne Warten gingen die Zugangsdaten zu frueh raus.
 resource "time_sleep" "wait_for_docker" {
-  depends_on      = [openstack_compute_instance_v2.team_vm]
+  depends_on      = [openstack_compute_instance_v2.team_vm, openstack_compute_interface_attach_v2.team_v4]
   create_duration = "300s"
 }
 
@@ -187,17 +291,20 @@ resource "time_sleep" "wait_for_docker" {
 # ADRESSEN
 ############################
 
-# Oeffentlich erreichbar ist nur die IPv6-Adresse (die IPv4 ist eine
-# projektinterne NAT-Adresse). Ohne Klammern, weil ssh "user@2001:db8::1"
-# erwartet; fehlt IPv6 wider Erwarten, faellt es auf IPv4 zurueck.
+# Verbindungsziel je Team. Bei ipv6 die IPv6-Adresse (die IPv4 im IPv6-Netz
+# ist eine projektinterne NAT-Adresse), bei ipv4 die feste IPv4, bei dual die
+# oeffentliche IPv4 der zweiten Schnittstelle, weil sie mehr Heimnetze
+# erreicht. Ohne Klammern, weil ssh "user@2001:db8::1" erwartet.
 locals {
   team_ip = {
     for team in local.teams_list : team => (
-      local.enable_floating_ip
-      ? openstack_networking_floatingip_v2.team_fip[team].address
+      local.enable_floating_ip ? openstack_networking_floatingip_v2.team_fip[team].address
+      : var.ip_mode == "ipv4" ? openstack_compute_instance_v2.team_vm[team].network[0].fixed_ip_v4
+      : local.dual ? local.secondary[team].ipv4
       : (
+        # access_ip_v6 liefert der Provider mit Klammern
         openstack_compute_instance_v2.team_vm[team].access_ip_v6 != ""
-        ? openstack_compute_instance_v2.team_vm[team].access_ip_v6
+        ? trim(openstack_compute_instance_v2.team_vm[team].access_ip_v6, "[]")
         : openstack_compute_instance_v2.team_vm[team].network[0].fixed_ip_v4
       )
     )

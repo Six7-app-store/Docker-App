@@ -28,6 +28,7 @@ jobs:
           tofu fmt -check -recursive
           tofu init -backend=false -input=false
           tofu validate
+          tofu test
 
       - name: ShellCheck
         run: shellcheck tofu/files/*.sh
