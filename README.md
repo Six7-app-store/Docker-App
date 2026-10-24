@@ -50,7 +50,7 @@ eine Absprache, keine technische Sperre.
 | VMs | **eine VM pro Team**, ein Docker-Daemon pro Nutzer |
 | Flavor | im Wizard wählbar, Standard `gp1.small` |
 | Betriebssystem | Ubuntu 24.04, Software wird beim ersten Boot per cloud-init installiert |
-| Erreichbarkeit | IPv6-Adresse der VM, SSH auf Port 22 |
+| Erreichbarkeit | SSH auf Port 22, wählbar über IPv6 (Standard), IPv4 oder beides |
 | Offene Ports | 22 (SSH), 8000–8999 (veröffentlichte Container-Ports) |
 | Bereit nach | ca. 4–5 Minuten nach dem Start der VM |
 | Obergrenze | `max_teams`, Standard 15 Team-VMs pro Deployment |
@@ -68,7 +68,9 @@ Mirror, fällt Docker automatisch auf Docker Hub zurück.
 | Variable | Wizard-Feld | Standard |
 |---|---|---|
 | `image_name` | Image-Auswahl | `Ubuntu 24.04` |
-| `network_uuid` | Netzwerk-Auswahl | DHBWV6-Netz |
+| `ip_mode` | Adressfamilie: `ipv4`, `ipv6` oder `dual` | `ipv6` |
+| `network_uuid` | Netz mit öffentlicher IPv6, für `ipv6` und `dual` | DHBWV6-Netz |
+| `network_v4_uuid` | Netz mit öffentlich gerouteter IPv4, für `ipv4` und `dual` | leer |
 | `shared_secgroup_id` | Security-Group-Auswahl | gemeinsame App-Store-SG |
 | `flavor_name` | Flavor-Auswahl | `gp1.small` |
 | `floating_ip_pool` | External-Network-Auswahl (derzeit ungenutzt) | `DHBW` |
@@ -78,6 +80,24 @@ Mirror, fällt Docker automatisch auf Docker Hub zurück.
 
 Jeder Nutzer speichert seine Images getrennt (`~/.local/share/docker`).
 Bei großen Teams oder großen Images einen Flavor mit mehr Platte wählen.
+
+## Adressfamilie (`ip_mode`)
+
+| `ip_mode` | Schnittstellen | Zugangsdaten nennen |
+|---|---|---|
+| `ipv6` (Standard) | eine, im Netz `network_uuid` | die IPv6 |
+| `ipv4` | eine, im Netz `network_v4_uuid` | die IPv4 |
+| `dual` | Hauptschnittstelle in `network_uuid`, zweite in `network_v4_uuid` | die IPv4 |
+
+Wie bei der Ubuntu-App: Bei `dual` hängt OpenTofu die IPv4-Schnittstelle
+erst an die laufende VM. cloud-init wartet auf sie und richtet sie mit
+eigener Routing-Tabelle über das Gateway des IPv4-Netzes ein, bevor die
+Einrichtung startet. Die IPv4 im Netz `DHBWV6` ist eine private
+NAT-Adresse; öffentliches IPv4 gibt es nur über ein eigenes IPv4-Netz,
+deshalb brauchen `ipv4` und `dual` die Variable `network_v4_uuid`. Eine
+eigene Security Group öffnet SSH je gewählter Familie.
+
+Auf newstack erprobt ist bisher nur `ipv6`.
 
 ## Aufbau
 
@@ -110,12 +130,21 @@ Auf der VM (als Admin über die OpenStack-Konsole):
 
 ## Lokale Checks
 
-    cd tofu && tofu fmt -check && tofu init -backend=false && tofu validate
+    cd tofu && tofu fmt -check && tofu init -backend=false && tofu validate && tofu test
     shellcheck tofu/files/*.sh
+
+`tofu test` mockt alle Provider und braucht keinen OpenStack-Zugang.
 
 ## Release
 
 Der AppStore deployt nur Git-Tags im Format `v<Major>.<Minor>.<Patch>`.
+
+### v1.1.0
+
+Adressfamilie wählbar: `ip_mode` mit `ipv4`, `ipv6` oder `dual`, neue
+Variable `network_v4_uuid`, eigene SSH-Regel je Familie. Die Adresse in den
+Zugangsdaten kommt ohne eckige Klammern. Tests mit gemockten Providern
+unter `tofu/tests/`.
 
 ### v1.0.0
 
